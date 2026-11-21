@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Dịch phụ đề">
+<title>Dịch phụ đề game</title>
+<style>
+:root{--bg:#10151c;--panel:#1a222d;--line:#2c3848;--text:#eef3f8;--dim:#8fa1b5;--accent:#ffb020}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,"Segoe UI",Roboto,sans-serif}
+body{padding:env(safe-area-inset-top) 12px env(safe-area-inset-bottom);max-width:720px;margin:0 auto}
+h1{font-size:18px;margin:12px 0 8px}
+.cam{position:relative;background:#000;border-radius:10px;overflow:hidden;aspect-ratio:16/9}
+video{width:100%;height:100%;object-fit:cover;display:block}
+#band{position:absolute;left:5%;width:90%;border:2px solid var(--accent);background:rgba(255,176,32,.12);pointer-events:none}
+#out{margin:12px 0;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;min-height:150px}
+#vi{font-size:26px;line-height:1.35;font-weight:600}
+#en{margin-top:10px;font-size:14px;color:var(--dim)}
+#old{margin-top:10px;font-size:15px;color:var(--dim);border-top:1px solid var(--line);padding-top:8px}
+#st{font-size:13px;color:var(--dim);margin:6px 0}
+.row{display:flex;gap:10px;align-items:center;margin:8px 0;font-size:14px}
+.row label{width:110px;color:var(--dim)}
+.row input[type=range]{flex:1}
+button{width:100%;padding:14px;font-size:17px;font-weight:700;border:0;border-radius:10px;background:var(--accent);color:#1a1200}
+button.stop{background:#d9534f;color:#fff}
+</style>
+</head>
+<body>
+<h1>Dịch phụ đề game Anh → Việt</h1>
+<div class="cam"><video id="v" playsinline muted autoplay></video><div id="band"></div></div>
+<div id="st">Bấm “Bật camera” rồi hướng vào màn hình, khung vàng phải nằm đúng dòng phụ đề.</div>
+<div id="out"><div id="vi">Bản dịch sẽ hiện ở đây</div><div id="en"></div><div id="old"></div></div>
+<button id="btn">Bật camera</button>
+<div class="row"><label>Vị trí khung</label><input id="y" type="range" min="0" max="90" value="72"></div>
+<div class="row"><label>Độ cao khung</label><input id="h" type="range" min="5" max="40" value="16"></div>
+<div class="row"><label>Độ sáng chữ</label><input id="t" type="range" min="100" max="240" value="170"></div>
+<div class="row"><label><input id="w" type="checkbox" checked> Chữ trắng</label><span style="color:var(--dim)">Tắt nếu phụ đề không phải màu trắng</span></div>
+<canvas id="c" hidden></canvas>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const v=$('v'),band=$('band'),c=$('c'),st=$('st'),btn=$('btn');
+let running=false,worker=null,last='',hist=[];
+
+function layout(){band.style.top=$('y').value+'%';band.style.height=$('h').value+'%'}
+['y','h'].forEach(i=>$(i).addEventListener('input',layout));layout();
+
+async function translate(t){
+  try{
+    const r=await fetch('https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=vi&dt=t&q='+encodeURIComponent(t));
+    const j=await r.json();return j[0].map(x=>x[0]).join('');
+  }catch(e){
+    const r=await fetch('https://api.mymemory.translated.net/get?q='+encodeURIComponent(t)+'&langpair=en|vi');
+    const j=await r.json();return j.responseData.translatedText;
+  }
+}
+
+function grab(){
+  const vw=v.videoWidth,vh=v.videoHeight;if(!vw)return null;
+  // video hiển thị theo object-fit:cover trong khung 16:9, đổi tỉ lệ khung sang pixel video
+  const boxR=16/9,vr=vw/vh;let sx=0,sy=0,sw=vw,sh=vh;
+  if(vr>boxR){sw=vh*boxR;sx=(vw-sw)/2}else{sh=vw/boxR;sy=(vh-sh)/2}
+  const y=sy+sh*$('y').value/100,h=sh*$('h').value/100,x=sx+sw*0.05,w=sw*0.9;
+  const scale=Math.min(2,1400/w);
+  c.width=Math.round(w*scale);c.height=Math.round(h*scale);
+  const g=c.getContext('2d',{willReadFrequently:true});
+  g.drawImage(v,x,y,w,h,0,0,c.width,c.height);
+  const d=g.getImageData(0,0,c.width,c.height),p=d.data,thr=+$('t').value,white=$('w').checked;
+  for(let i=0;i<p.length;i+=4){
+    const l=0.3*p[i]+0.59*p[i+1]+0.11*p[i+2];
+    const o=white?(l>thr?0:255):l;
+    p[i]=p[i+1]=p[i+2]=o;
+  }
+  g.putImageData(d,0,0);return c;
+}
+
+const norm=s=>s.toLowerCase().replace(/[^a-z]/g,'');
+function clean(t){
+  t=t.replace(/\s*\n\s*/g,' ').replace(/[|_~`^]/g,'').trim();
+  const letters=(t.match(/[A-Za-z]/g)||[]).length;
+  return(t.length>=6&&letters/t.length>0.6)?t:'';
+}
+
+async function loop(){
+  while(running){
+    try{
+      const cv=grab();
+      if(cv){
+        const {data}=await worker.recognize(cv);
+        const t=clean(data.text);
+        if(t&&norm(t)!==norm(last)){
+          last=t;$('en').textContent=t;
+          const vi=await translate(t);
+          if($('vi').textContent&&!$('vi').dataset.empty)hist.unshift($('vi').textContent);
+          hist=hist.slice(0,2);delete $('vi').dataset.empty;
+          $('vi').textContent=vi;$('old').textContent=hist.join('  •  ');
+          st.textContent='Đang dịch…';
+        }
+      }
+    }catch(e){st.textContent='Lỗi: '+e.message}
+    await new Promise(r=>setTimeout(r,700));
+  }
+}
+
+btn.onclick=async()=>{
+  if(running){running=false;btn.textContent='Bật camera';btn.classList.remove('stop');st.textContent='Đã dừng.';return}
+  try{
+    st.textContent='Đang mở camera…';
+    if(!v.srcObject){
+      const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1920},height:{ideal:1080}},audio:false});
+      v.srcObject=s;await v.play();
+    }
+    if(!worker){st.textContent='Đang tải bộ nhận dạng chữ (lần đầu hơi lâu)…';worker=await Tesseract.createWorker('eng')}
+    running=true;btn.textContent='Dừng';btn.classList.add('stop');st.textContent='Đang chạy. Chờ phụ đề xuất hiện trong khung vàng.';
+    loop();
+  }catch(e){st.textContent='Không mở được camera: '+e.message+'. Hãy cho phép camera cho Safari.'}
+};
+$('vi').dataset.empty=1;
+</script>
+</body>
+</html>
